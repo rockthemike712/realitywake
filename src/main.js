@@ -251,13 +251,33 @@ stick.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false
 stick.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
 
 let lookPointer = null;
+let fieldMovePointer = null;
+const fieldMoveOrigin = new THREE.Vector2();
 let lastLookX = 0;
 let lastLookY = 0;
 canvas.addEventListener('pointerdown', (e) => {
-  if (isCoarse && e.clientX < innerWidth * .42 && e.clientY > innerHeight * .55) return;
+  if (isCoarse && e.clientX < innerWidth * .62 && e.clientY > innerHeight * .24) {
+    e.preventDefault();
+    fieldMovePointer = e.pointerId;
+    fieldMoveOrigin.set(e.clientX, e.clientY);
+    joystick.set(0, 0);
+    canvas.setPointerCapture(e.pointerId);
+    return;
+  }
   lookPointer = e.pointerId; lastLookX = e.clientX; lastLookY = e.clientY; canvas.setPointerCapture(e.pointerId);
 });
 canvas.addEventListener('pointermove', (e) => {
+  if (e.pointerId === fieldMovePointer) {
+    e.preventDefault();
+    const dx = e.clientX - fieldMoveOrigin.x;
+    const dy = e.clientY - fieldMoveOrigin.y;
+    const max = 52;
+    const len = Math.hypot(dx, dy);
+    const s = Math.min(1, max / Math.max(max, len));
+    joystick.set(dx / max * s, dy / max * s);
+    nub.style.transform = `translate3d(${dx*s}px,${dy*s}px,0)`;
+    return;
+  }
   if (e.pointerId !== lookPointer) return;
   const dx = e.clientX - lastLookX;
   const dy = e.clientY - lastLookY;
@@ -265,7 +285,14 @@ canvas.addEventListener('pointermove', (e) => {
   cameraPitch = THREE.MathUtils.clamp(cameraPitch + dy * .0035, .46, 1.02);
   lastLookX = e.clientX; lastLookY = e.clientY;
 });
-const releaseLook = (e) => { if (e.pointerId === lookPointer) lookPointer = null; };
+const releaseLook = (e) => {
+  if (e.pointerId === fieldMovePointer) {
+    fieldMovePointer = null;
+    joystick.set(0, 0);
+    nub.style.transform = 'translate3d(0,0,0)';
+  }
+  if (e.pointerId === lookPointer) lookPointer = null;
+};
 canvas.addEventListener('pointerup', releaseLook);
 canvas.addEventListener('pointercancel', releaseLook);
 

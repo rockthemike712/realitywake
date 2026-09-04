@@ -4,8 +4,8 @@ import './style.css';
 const canvas = document.querySelector('#world');
 const isCoarse = matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0 || innerWidth < 760;
 document.body.classList.toggle('touch', isCoarse);
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: !isCoarse, powerPreference: 'high-performance' });
-renderer.setPixelRatio(Math.min(devicePixelRatio, isCoarse ? 1.55 : 2));
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio, isCoarse ? 1.9 : 2));
 renderer.setSize(innerWidth, innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -19,7 +19,7 @@ const camera = new THREE.PerspectiveCamera(54, innerWidth / innerHeight, 0.08, 1
 const clock = new THREE.Clock();
 const WORLD = 68;
 const HALF = WORLD / 2;
-const GRID = isCoarse ? 104 : 128;
+const GRID = isCoarse ? 112 : 128;
 const CELLS = GRID * GRID;
 
 // Reality is a small evolving medium: chemistry makes form, waves keep it moving,
@@ -46,7 +46,7 @@ const terrainUniforms = {
 };
 
 const terrain = new THREE.Mesh(
-  new THREE.PlaneGeometry(WORLD, WORLD, isCoarse ? 104 : 144, isCoarse ? 104 : 144).rotateX(-Math.PI / 2),
+  new THREE.PlaneGeometry(WORLD, WORLD, isCoarse ? 132 : 152, isCoarse ? 132 : 152).rotateX(-Math.PI / 2),
   new THREE.ShaderMaterial({
     uniforms: terrainUniforms,
     vertexShader: `
@@ -208,6 +208,9 @@ let cameraPitch = .7;
 let cameraDistance = isCoarse ? 14.5 : 16.5;
 const cameraPos = new THREE.Vector3(0, 12, 14);
 const lookTarget = new THREE.Vector3();
+const smoothedLookTarget = new THREE.Vector3();
+let playerRenderY = 1.15;
+let playerVerticalVelocity = 0;
 const keys = new Set();
 let movedYet = false;
 let simAccumulator = 0;
@@ -316,13 +319,22 @@ function gridIndex(x, z) {
 }
 
 function sampleField(x, z, array = v) {
-  return array[gridIndex(x, z)];
+  const fx = THREE.MathUtils.clamp((x / WORLD + .5) * (GRID - 1), 0, GRID - 1);
+  const fz = THREE.MathUtils.clamp((z / WORLD + .5) * (GRID - 1), 0, GRID - 1);
+  const x0 = Math.floor(fx), z0 = Math.floor(fz);
+  const x1 = Math.min(GRID - 1, x0 + 1), z1 = Math.min(GRID - 1, z0 + 1);
+  const tx = fx - x0, tz = fz - z0;
+  const top = THREE.MathUtils.lerp(array[z0 * GRID + x0], array[z0 * GRID + x1], tx);
+  const bottom = THREE.MathUtils.lerp(array[z1 * GRID + x0], array[z1 * GRID + x1], tx);
+  return THREE.MathUtils.lerp(top, bottom, tz);
 }
 
 function terrainHeight(x, z) {
-  const i = gridIndex(x, z);
   const base = Math.sin(x * .17) * .32 + Math.sin(z * .145 + 1.7) * .3;
-  return base + v[i] * 8.2 + wake[i] * 4.6 + Math.pow(memory[i], 1.7) * 3.4;
+  const chemistry = sampleField(x, z, v);
+  const pulse = sampleField(x, z, wake);
+  const remembered = sampleField(x, z, memory);
+  return base + chemistry * 8.2 + pulse * 4.6 + Math.pow(remembered, 1.7) * 3.4;
 }
 
 function injectPoint(x, z, power, radius = 2) {
@@ -598,8 +610,11 @@ function updatePlayer(dt) {
     lastDeposit.copy(playerPos);
     if (playerPos.distanceTo(lastTrailPoint) > .48) addTrailPoint();
   }
-  const y = terrainHeight(playerPos.x, playerPos.z) + 1.15;
-  player.position.set(playerPos.x, y, playerPos.z);
+  const targetY = terrainHeight(playerPos.x, playerPos.z) + 1.15;
+  playerVerticalVelocity += (targetY - playerRenderY) * 58 * dt;
+  playerVerticalVelocity *= Math.exp(-dt * 13.5);
+  playerRenderY += playerVerticalVelocity * dt;
+  player.position.set(playerPos.x, playerRenderY, playerPos.z);
   player.rotation.y = playerFacing;
   core.rotation.x += dt * (1.2 + speed * .12);
   core.rotation.z += dt * .75;
@@ -622,7 +637,8 @@ function updateCamera(dt, speed) {
   cameraPos.lerp(desired, 1 - Math.exp(-dt * 3.4));
   camera.position.copy(cameraPos);
   lookTarget.copy(player.position).addScaledVector(playerVelocity, .48).add(new THREE.Vector3(0, .4, 0));
-  camera.lookAt(lookTarget);
+  smoothedLookTarget.lerp(lookTarget, 1 - Math.exp(-dt * 6.2));
+  camera.lookAt(smoothedLookTarget);
   camera.fov += ((54 + speed * .65) - camera.fov) * Math.min(1, dt * 3);
   camera.updateProjectionMatrix();
 }
@@ -635,10 +651,9 @@ function animate() {
   anomalyCooldown -= dt;
   const speed = updatePlayer(dt);
   simAccumulator += dt;
-  const tick = isCoarse ? 1 / 24 : 1 / 30;
+  const tick = 1 / 30;
   while (simAccumulator >= tick) {
     simulate();
-    if (!isCoarse && speed > .3) simulate();
     simAccumulator -= tick;
   }
   updateSentinels(time, dt);
@@ -655,7 +670,7 @@ animate();
 
 addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
-  renderer.setPixelRatio(Math.min(devicePixelRatio, isCoarse ? 1.55 : 2));
+  renderer.setPixelRatio(Math.min(devicePixelRatio, isCoarse ? 1.9 : 2));
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
 });

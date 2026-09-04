@@ -2,7 +2,8 @@ import * as THREE from 'three';
 import './style.css';
 
 const canvas = document.querySelector('#world');
-const isCoarse = matchMedia('(pointer: coarse)').matches;
+const isCoarse = matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0 || innerWidth < 760;
+document.body.classList.toggle('touch', isCoarse);
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: !isCoarse, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(devicePixelRatio, isCoarse ? 1.55 : 2));
 renderer.setSize(innerWidth, innerHeight);
@@ -232,7 +233,13 @@ function updateStick(e) {
   joystick.set(x / max * s, y / max * s);
   nub.style.transform = `translate3d(${x*s}px,${y*s}px,0)`;
 }
-stick.addEventListener('pointerdown', (e) => { stickPointer = e.pointerId; stick.setPointerCapture(e.pointerId); updateStick(e); });
+stick.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  stickPointer = e.pointerId;
+  stick.setPointerCapture(e.pointerId);
+  updateStick(e);
+});
 stick.addEventListener('pointermove', (e) => { if (e.pointerId === stickPointer) updateStick(e); });
 function releaseStick(e) {
   if (e.pointerId !== stickPointer) return;
@@ -240,6 +247,8 @@ function releaseStick(e) {
 }
 stick.addEventListener('pointerup', releaseStick);
 stick.addEventListener('pointercancel', releaseStick);
+stick.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
+stick.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
 
 let lookPointer = null;
 let lastLookX = 0;

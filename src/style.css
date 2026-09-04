@@ -78,11 +78,10 @@ html, body {
 #stick {
   display: none;
   position: fixed;
-  left: 50%;
-  bottom: max(38px, calc(env(safe-area-inset-bottom) + 14px));
-  width: 128px;
-  height: 128px;
-  transform: translateX(-50%);
+  left: 34px;
+  bottom: max(154px, calc(env(safe-area-inset-bottom) + 130px));
+  width: 122px;
+  height: 122px;
   z-index: 10;
   border: 1px solid rgba(123,242,255,.25);
   border-radius: 50%;
@@ -95,7 +94,7 @@ html, body {
   position: absolute;
   left: 0;
   right: 0;
-  bottom: -18px;
+  bottom: -21px;
   text-align: center;
   color: rgba(190,250,255,.42);
   font-size: 8px;
@@ -118,7 +117,7 @@ html, body {
   display: none;
   position: fixed;
   right: 18px;
-  bottom: max(94px, calc(env(safe-area-inset-bottom) + 66px));
+  bottom: max(205px, calc(env(safe-area-inset-bottom) + 181px));
   width: 92px;
   color: rgba(190,250,255,.37);
   font-size: 8px;
@@ -157,9 +156,9 @@ body.touch #lookHint { display: block; }
 body.touch #desktopHint { display: none; }
 
 body.touch #sound {
-  top: auto;
+  top: 18px;
   right: 14px;
-  bottom: max(18px, env(safe-area-inset-bottom));
+  bottom: auto;
 }
 
 @media (prefers-reduced-motion: reduce) {

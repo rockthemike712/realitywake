@@ -78,10 +78,12 @@ html, body {
 #stick {
   display: none;
   position: fixed;
-  left: 22px;
-  bottom: max(28px, env(safe-area-inset-bottom));
-  width: 116px;
-  height: 116px;
+  left: 50%;
+  bottom: max(38px, calc(env(safe-area-inset-bottom) + 14px));
+  width: 128px;
+  height: 128px;
+  transform: translateX(-50%);
+  z-index: 10;
   border: 1px solid rgba(123,242,255,.25);
   border-radius: 50%;
   background: radial-gradient(circle, rgba(61,220,255,.05), rgba(0,0,0,.09));
@@ -115,8 +117,8 @@ html, body {
 #lookHint {
   display: none;
   position: fixed;
-  right: 22px;
-  bottom: max(76px, calc(env(safe-area-inset-bottom) + 48px));
+  right: 18px;
+  bottom: max(94px, calc(env(safe-area-inset-bottom) + 66px));
   width: 92px;
   color: rgba(190,250,255,.37);
   font-size: 8px;
@@ -147,6 +149,17 @@ body.moving #desktopHint { opacity: 0; }
   #stick, #lookHint { display: block; }
   #desktopHint { display: none; }
   #sound { top: auto; bottom: max(18px, env(safe-area-inset-bottom)); }
+}
+
+body.touch #stick,
+body.touch #lookHint { display: block; }
+
+body.touch #desktopHint { display: none; }
+
+body.touch #sound {
+  top: auto;
+  right: 14px;
+  bottom: max(18px, env(safe-area-inset-bottom));
 }
 
 @media (prefers-reduced-motion: reduce) {

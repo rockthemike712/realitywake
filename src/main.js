@@ -394,6 +394,140 @@ const anomalies = [];
 const floorFolds = [];
 const bridges = [];
 let ridingBridge = null;
+let rideT=0, rideS=0, mountCooldown=0;
+const localFrame=new THREE.Quaternion();
+const localUp=new THREE.Vector3(0,1,0);
+const WORLD_UP=new THREE.Vector3(0,1,0);
+const SURFACE_ROWS=65, SURFACE_COLS=17;
+
+function surfacePoint(b,t,s){
+  t=THREE.MathUtils.clamp(t,0,1);
+  b.centerCache ||= new Map();
+  let base=b.centerCache.get(t);
+  if(!base){
+  const f=t*(b.points.length-1),i=Math.min(b.points.length-2,Math.floor(f));
+  const a=b.points[i],c=b.points[i+1],mix=f-i;
+  const x=THREE.MathUtils.lerp(a.x,c.x,mix),z=THREE.MathUtils.lerp(a.z,c.z,mix);
+  const len=Math.max(.001,Math.hypot(c.x-a.x,c.z-a.z));
+  base={x,z,y:terrainHeight(x,z)+Math.pow(Math.sin(t*Math.PI),2)*b.height+.2,
+    nx:-(c.z-a.z)/len,nz:(c.x-a.x)/len};
+  if(b.centerCache.size>512)b.centerCache.clear();
+  b.centerCache.set(t,base);
+  }
+  const side=new THREE.Vector3(base.nx,0,base.nz);
+  const envelope=Math.pow(Math.sin(Math.PI*t),2);
+  const inherited=b.etch?.[Math.round(t*64)]||0;
+  const bend=.12+envelope*Math.min(3.65,2.8+b.visits*.16+inherited*.12)*(1-Math.exp(-b.time*.3));
+  const radius=2.5+b.width*.6;
+  const theta=s*bend;
+  return new THREE.Vector3(base.x,base.y,base.z)
+    .addScaledVector(side,radius*Math.sin(theta))
+    .addScaledVector(WORLD_UP,radius*(1-Math.cos(theta)));
+}
+
+function surfaceFrame(b,t,s){
+  const point=surfacePoint(b,t,s);
+  const along=surfacePoint(b,t+.002,s).sub(surfacePoint(b,t-.002,s));
+  const across=surfacePoint(b,t,s+.002).sub(surfacePoint(b,t,s-.002));
+  const mt=along.length()/(Math.min(1,t+.002)-Math.max(0,t-.002));
+  const ms=across.length()/.004;
+  along.normalize();across.normalize();
+  const up=new THREE.Vector3().crossVectors(across,along).normalize();
+  const right=new THREE.Vector3().crossVectors(up,along).normalize();
+  const quaternion=new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(right,up,along));
+  return {point,along,across,up,quaternion,mt,ms};
+}
+
+function mountSurface(b,t,s=0){
+  ridingBridge=b;rideT=t;rideS=s;b.visits++;
+}
+
+let passage=null;
+const seams=[];
+const cameraProbe=new THREE.Raycaster();
+function findPassage(b,end){
+  if(b.visits<2)return null;
+  let seam=seams.find(s=>(s.a===b&&s.aEnd===end)||(s.b===b&&s.bEnd===end));
+  if(seam)return {seam,reverse:seam.b===b};
+  const other=bridges.find(c=>c!==b&&c.visits>=2&&Math.hypot(c.x-b.x,c.z-b.z)>14);
+  if(!other)return null;
+  const a=surfaceFrame(b,end,0),d=surfaceFrame(other,0,0);
+  const curve=new THREE.CubicBezierCurve3(a.point,
+    a.point.clone().addScaledVector(a.along,end?6:-6).addScaledVector(a.up,3),
+    d.point.clone().addScaledVector(d.along,-6).addScaledVector(d.up,3),d.point);
+  const mesh=new THREE.Mesh(new THREE.TubeGeometry(curve,64,.75,8,false),b.mesh.material.clone());
+  scene.add(mesh);
+  seam={a:b,aEnd:end,b:other,bEnd:0,curve,mesh};seams.push(seam);
+  return {seam,reverse:false};
+}
+
+function updateAllegiance(dt,input){
+  const strength=Math.min(1,input.length());
+  const speed=12.2*strength;
+  if(passage){
+    const {seam,reverse}=passage;
+    const intention=input.dot(passage.entryInput);
+    passage.progress=THREE.MathUtils.clamp(passage.progress+dt*12.2*intention/16,0,1);
+    const u=passage.progress,t=reverse?1-u:u;
+    const point=seam.curve.getPoint(t);
+    const from=surfaceFrame(reverse?seam.b:seam.a,reverse?seam.bEnd:seam.aEnd,0);
+    const to=surfaceFrame(reverse?seam.a:seam.b,reverse?seam.aEnd:seam.bEnd,0);
+    const q=from.quaternion.clone().slerp(to.quaternion,u*u*(3-2*u));
+    localFrame.slerp(q,1-Math.exp(-dt*2.4));localUp.copy(WORLD_UP).applyQuaternion(localFrame);
+    const previous=player.position.clone();
+    player.position.copy(point).addScaledVector(localUp,1.35);
+    playerVelocity.copy(player.position).sub(previous).multiplyScalar(1/Math.max(.001,dt));
+    playerPos.copy(point);playerRenderY=player.position.y;
+    if(u>=1 || (u===0&&intention<0)){
+      const arrival=u>=1;
+      const destination=arrival?(reverse?seam.a:seam.b):(reverse?seam.b:seam.a);
+      const end=arrival?(reverse?seam.aEnd:seam.bEnd):(reverse?seam.bEnd:seam.aEnd);
+      mountSurface(destination,end? .985:.015);
+      playerVelocity.copy(surfaceFrame(destination,rideT,0).along).multiplyScalar((end?-1:1)*speed);
+      passage=null;
+    }
+    player.quaternion.copy(localFrame);
+    return speed;
+  }
+  const b=ridingBridge;
+  let f=surfaceFrame(b,rideT,rideS);
+  const forward=new THREE.Vector3(-Math.sin(cameraYaw),0,-Math.cos(cameraYaw)).applyQuaternion(localFrame);
+  const right=new THREE.Vector3(Math.cos(cameraYaw),0,-Math.sin(cameraYaw)).applyQuaternion(localFrame);
+  const desired=forward.multiplyScalar(-input.y).addScaledVector(right,input.x);
+  desired.addScaledVector(f.up,-desired.dot(f.up));
+  if(desired.lengthSq()>.0001)desired.normalize().multiplyScalar(speed);
+  playerVelocity.lerp(desired,1-Math.exp(-dt*7.2));
+  playerVelocity.addScaledVector(f.up,-playerVelocity.dot(f.up));
+  const nextT=rideT+playerVelocity.dot(f.along)*dt/Math.max(4,f.mt);
+  rideS=THREE.MathUtils.clamp(rideS+playerVelocity.dot(f.across)*dt/Math.max(1,f.ms),-1,1);
+  if(nextT<0||nextT>1){
+    const end=nextT>1?1:0,link=findPassage(b,end);
+    if(link){passage={...link,progress:0,entryInput:input.clone().normalize()};return speed;}
+    ridingBridge=null;mountCooldown=1;
+    playerPos.copy(f.point);playerRenderY=player.position.y;playerVerticalVelocity=0;
+    lastDeposit.copy(playerPos);lastTrailPoint.copy(playerPos);
+    return speed;
+  }
+  rideT=nextT;f=surfaceFrame(b,rideT,rideS);
+  const accepted=new THREE.Quaternion().setFromUnitVectors(localUp,f.up).multiply(localFrame);
+  localFrame.rotateTowards(accepted,dt*1.5);
+  localUp.copy(WORLD_UP).applyQuaternion(localFrame);
+  playerPos.copy(f.point);
+  player.position.lerp(f.point.clone().addScaledVector(f.up,1.2),1-Math.exp(-dt*14));
+  playerRenderY=player.position.y;
+  player.quaternion.copy(localFrame);
+  core.rotation.z=-input.x*.2;core.rotation.x=input.y*.2;
+  if(speed>.5){
+    const row=Math.round(rideT*(SURFACE_ROWS-1));
+    for(let i=Math.max(0,row-3);i<=Math.min(SURFACE_ROWS-1,row+3);i++){
+      const power=dt*speed*.18*(1-Math.abs(row-i)/4);
+      b.etch[i]=Math.min(4,b.etch[i]+power);
+      b.etchS[i]+=(rideS-b.etchS[i])*Math.min(1,power*3);
+    }
+  }
+  updateAudio(speed,1+b.etch[Math.round(rideT*64)]*.3);
+  return speed;
+}
 
 function liftWake(index,angle,speed,age) {
   const center=trail[index];
@@ -411,9 +545,11 @@ function liftWake(index,angle,speed,age) {
     .map(p=>({x:p.x,z:p.z}));
   if(points.length<10) return;
   const geometry=new THREE.BufferGeometry();
-  const positions=new Float32Array(points.length*2*3);
+  const positions=new Float32Array(SURFACE_ROWS*SURFACE_COLS*3);
   const indices=[];
-  for(let i=0;i<points.length-1;i++){const j=i*2;indices.push(j,j+1,j+2,j+1,j+3,j+2);}
+  for(let i=0;i<SURFACE_ROWS-1;i++)for(let k=0;k<SURFACE_COLS-1;k++){
+    const j=i*SURFACE_COLS+k;indices.push(j,j+1,j+SURFACE_COLS,j+1,j+SURFACE_COLS+1,j+SURFACE_COLS);
+  }
   geometry.setAttribute('position',new THREE.BufferAttribute(positions,3));
   geometry.setIndex(indices);
   const material=new THREE.MeshPhysicalMaterial({color:0xa6cfc2,emissive:0x102c30,
@@ -422,7 +558,15 @@ function liftWake(index,angle,speed,age) {
   const mesh=new THREE.Mesh(geometry,material);
   mesh.frustumCulled=false;
   scene.add(mesh);
+  const recursive=new THREE.Mesh(new THREE.BufferGeometry(),material.clone());
+  const recursivePositions=new Float32Array(SURFACE_ROWS*5*3),ri=[];
+  for(let i=0;i<SURFACE_ROWS-1;i++)for(let k=0;k<4;k++){
+    const j=i*5+k;ri.push(j,j+1,j+5,j+1,j+6,j+5);
+  }
+  recursive.geometry.setAttribute('position',new THREE.BufferAttribute(recursivePositions,3));
+  recursive.geometry.setIndex(ri);recursive.frustumCulled=false;scene.add(recursive);
   bridges.push({x:center.x,z:center.z,points,mesh,positions,height:0,startIndex,
+    recursive,recursivePositions,etch:new Float32Array(SURFACE_ROWS),etchS:new Float32Array(SURFACE_ROWS),
     target:5+angle*4+Math.min(3,speed*.2),width:.65+Math.min(1.2,age/35),
     twist:angle*1.4,visits:0,inside:true,time:0});
   playStrike(100+speed*12+angle*90);
@@ -437,7 +581,7 @@ function bridgeSurface(b,x,z) {
     const d=Math.hypot(x-a.x-t*dx,z-a.z-t*dz);
     if(d>b.width || (best && d>=best.distance))continue;
     const progress=(i+t)/(b.points.length-1);
-    best={distance:d,progress,y:terrainHeight(x,z)+Math.sin(progress*Math.PI)*b.height+.2};
+    best={distance:d,progress,y:surfacePoint(b,progress,0).y};
   }
   return best;
 }
@@ -453,23 +597,27 @@ function evolveBridges(dt){
       playStrike(140+b.visits*19);
     }
     b.height+=(b.target+Math.sin(b.time*.65)*.3-b.height)*(1-Math.exp(-dt*.85));
-    for(let i=0;i<b.points.length;i++){
-      const p=b.points[i], a=b.points[Math.max(0,i-1)], c=b.points[Math.min(b.points.length-1,i+1)];
-      const length=Math.max(.001,Math.hypot(c.x-a.x,c.z-a.z));
-      const nx=-(c.z-a.z)/length,nz=(c.x-a.x)/length;
-      const t=i/(b.points.length-1);
-      // The two banks continually part and rejoin, while remaining a solid deck.
-      const width=b.width*(1+.3*Math.sin(t*12+b.twist+b.time*.4)*Math.sin(t*Math.PI));
-      for(let side=0;side<2;side++){
-        const sign=side?1:-1,x=p.x+nx*width*sign,z=p.z+nz*width*sign;
-        const at=(i*2+side)*3;
-        b.positions[at]=x;
-        b.positions[at+1]=terrainHeight(x,z)+Math.sin(t*Math.PI)*b.height+.2;
-        b.positions[at+2]=z;
+    b.centerCache?.clear();
+    for(let i=0;i<SURFACE_ROWS;i++){
+      const t=i/(SURFACE_ROWS-1);
+      for(let k=0;k<SURFACE_COLS;k++){
+        surfacePoint(b,t,k/(SURFACE_COLS-1)*2-1).toArray(b.positions,(i*SURFACE_COLS+k)*3);
+      }
+      const f=surfaceFrame(b,t,b.etchS[i]);
+      const growth=b.etch[i]*(.85+.15*Math.sin(b.time*.7+i*.12));
+      for(let k=0;k<5;k++){
+        const q=(k-2)/2;
+        f.point.clone().addScaledVector(f.across,q*(.12+growth*.45))
+          .addScaledVector(f.up,.07+growth*(1-q*q))
+          .addScaledVector(f.along,Math.sin(q*2+b.time*.3)*growth*.3)
+          .toArray(b.recursivePositions,(i*5+k)*3);
       }
     }
+    b.recursive.geometry.attributes.position.needsUpdate=true;
+    b.recursive.geometry.computeVertexNormals();
     b.mesh.geometry.attributes.position.needsUpdate=true;
     b.mesh.geometry.computeVertexNormals();
+    b.mesh.geometry.computeBoundingSphere();
     b.mesh.material.roughness=.3+Math.sin(b.time*.3+b.visits)*.2;
   }
 }
@@ -760,6 +908,10 @@ function updatePlayer(dt) {
     (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0) - (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) + joystick.y
   );
   if (input.length() > 1) input.normalize();
+  mountCooldown=Math.max(0,mountCooldown-dt);
+  if(ridingBridge||passage)return updateAllegiance(dt,input);
+  localFrame.rotateTowards(new THREE.Quaternion(),dt*1.5);
+  localUp.copy(WORLD_UP).applyQuaternion(localFrame);
   const forward = new THREE.Vector3(-Math.sin(cameraYaw), 0, -Math.cos(cameraYaw));
   const right = new THREE.Vector3(Math.cos(cameraYaw), 0, -Math.sin(cameraYaw));
   const desired = forward.multiplyScalar(-input.y).add(right.multiplyScalar(input.x));
@@ -809,18 +961,13 @@ function updatePlayer(dt) {
     if (playerPos.distanceTo(lastTrailPoint) > .48) addTrailPoint();
   }
   let supportY=terrainHeight(playerPos.x,playerPos.z);
-  if(ridingBridge){
-    const surface=bridgeSurface(ridingBridge,playerPos.x,playerPos.z);
-    if(surface) supportY=Math.max(supportY,surface.y);
-    else ridingBridge=null;
-  }
-  if(!ridingBridge){
+  if(!ridingBridge && mountCooldown<=0){
     for(const b of bridges){
       const surface=bridgeSurface(b,playerPos.x,playerPos.z);
       // Approach a strand's roots to climb; crossing its middle stays underneath.
       if(surface && (surface.progress<.14 || surface.progress>.86) &&
           surface.y<playerRenderY+.65){
-        ridingBridge=b; supportY=Math.max(supportY,surface.y); break;
+        mountSurface(b,surface.progress); supportY=Math.max(supportY,surface.y); break;
       }
     }
   }
@@ -850,18 +997,26 @@ function updatePlayer(dt) {
 }
 
 function updateCamera(dt, speed) {
-  const forward = new THREE.Vector3(-Math.sin(cameraYaw), 0, -Math.cos(cameraYaw));
+  const forward = new THREE.Vector3(-Math.sin(cameraYaw), 0, -Math.cos(cameraYaw)).applyQuaternion(localFrame);
   const horizontal = Math.cos(cameraPitch) * cameraDistance;
   const vertical = Math.sin(cameraPitch) * cameraDistance;
-  const desired = player.position.clone().add(new THREE.Vector3(-forward.x * horizontal, vertical, -forward.z * horizontal));
+  const desired = player.position.clone().addScaledVector(forward,-horizontal).addScaledVector(localUp,vertical);
   desired.addScaledVector(playerVelocity, .16);
-  desired.y=Math.max(desired.y,terrainHeight(desired.x,desired.z)+3);
+  if(ridingBridge && !passage){
+    const direction=desired.clone().sub(player.position),distance=direction.length();
+    cameraProbe.set(player.position,direction.normalize());
+    cameraProbe.near=.3;cameraProbe.far=distance;
+    const hits=cameraProbe.intersectObject(ridingBridge.mesh,false);
+    if(hits.length)desired.copy(player.position).addScaledVector(direction,Math.max(1.8,hits[0].distance-.6));
+  }
+  if(!ridingBridge && !passage)desired.y=Math.max(desired.y,terrainHeight(desired.x,desired.z)+3);
   cameraPos.x+=(desired.x-cameraPos.x)*(1-Math.exp(-dt*4.5));
   cameraPos.z+=(desired.z-cameraPos.z)*(1-Math.exp(-dt*4.5));
   cameraPos.y+=(desired.y-cameraPos.y)*(1-Math.exp(-dt*2.2));
   camera.position.copy(cameraPos);
-  lookTarget.copy(player.position).addScaledVector(playerVelocity, .32).add(new THREE.Vector3(0, .4, 0));
+  lookTarget.copy(player.position).addScaledVector(playerVelocity, passage?.08:.32).addScaledVector(localUp,.4);
   smoothedLookTarget.lerp(lookTarget, 1 - Math.exp(-dt * 3.8));
+  camera.up.copy(localUp);
   camera.lookAt(smoothedLookTarget);
   camera.fov += ((54 + speed * .32) - camera.fov) * (1-Math.exp(-dt*2));
   camera.updateProjectionMatrix();

@@ -40,6 +40,8 @@ stateTexture.minFilter = THREE.LinearFilter;
 stateTexture.needsUpdate = true;
 
 const terrainUniforms = {
+  folds: { value: Array.from({length:12},()=>new THREE.Vector4(0,0,1,0)) },
+  foldRules: { value: Array.from({length:12},()=>new THREE.Vector4()) },
   stateMap: { value: stateTexture },
   time: { value: 0 },
   velocity: { value: 0 },
@@ -53,11 +55,13 @@ const terrain = new THREE.Mesh(
       uniform sampler2D stateMap;
       uniform float time;
       uniform float velocity;
+      uniform vec4 folds[12];
+      uniform vec4 foldRules[12];
       varying vec4 vState;
       varying float vHeight;
       varying vec3 vPos;
       void main() {
-        vState = texture2D(stateMap, uv);
+        vState = texture2D(stateMap, position.xz / 68. + .5);
         float chemistry = vState.r;
         float pulse = (vState.g - .5) * 2.;
         float memory = vState.b;
@@ -65,10 +69,18 @@ const terrain = new THREE.Mesh(
         vec3 p = position;
         float base = sin(p.x * .17) * .32 + sin(p.z * .145 + 1.7) * .3;
         float living = sin(time * 1.65 + p.x * .47 - p.z * .31) * chemistry * 1.45;
-        float folds = pow(max(0., chemistry), 1.55) * 8.2 + pulse * 4.6 + pow(memory, 1.7) * 3.4;
-        p.x += sin(p.z * .38 + time * .6 + visits * 8.) * chemistry * 1.25;
-        p.z += cos(p.x * .33 - time * .48 + memory * 9.) * chemistry * 1.25;
-        p.y += base + folds + living;
+        float relief = pow(max(0., chemistry), 1.55) * 5.2 + pulse * 2.2 + pow(memory, 1.7) * 2.;
+        p.y += base + relief + living * .45;
+        for(int i=0;i<12;i++){
+          vec2 q=(p.xz-folds[i].xy)/folds[i].z;
+          float d=length(q);
+          float envelope=pow(max(0.,1.-d*d),2.);
+          vec4 rule=foldRules[i];
+          float along=q.x*cos(rule.y)+q.y*sin(rule.y);
+          float across=-q.x*sin(rule.y)+q.y*cos(rule.y);
+          float form=rule.x < .5 ? 1.-2.3*d*d : sin(along*3.4)*exp(-across*across*7.);
+          p.y+=folds[i].w*envelope*form;
+        }
         vHeight = p.y;
         vPos = p;
         gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
@@ -96,8 +108,10 @@ const terrain = new THREE.Mesh(
         col += amber * pulse * .75;
         col += cyan * vein * chemistry * .35;
         col += vec3(.025, .045, .08) * contour;
-        float edge = smoothstep(31., 26., length(vPos.xz));
-        gl_FragColor = vec4(col * edge, 1.0);
+        vec3 normal=normalize(cross(dFdx(vPos),dFdy(vPos)));
+        float light=.4+.6*abs(dot(normal,normalize(vec3(-.4,1.,.3))));
+        col=mix(vec3(.095,.12,.13),col,.65)*light;
+        gl_FragColor = vec4(col, 1.0);
       }
     `,
     side: THREE.DoubleSide,
@@ -129,7 +143,9 @@ const sky = new THREE.Mesh(
       }`,
   })
 );
-scene.add(sky);
+// An enclosed, misty material world, not a planetary horizon.
+scene.background.set(0x182227);
+scene.fog = new THREE.FogExp2(0x182227, .024);
 
 function mulberry32(seed) {
   return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
@@ -144,7 +160,7 @@ const stoneMat = new THREE.MeshStandardMaterial({
   emissive: 0x052a38,
   roughness: .38,
   metalness: .25,
-  flatShading: true,
+  flatShading: false,
 });
 
 for (let i = 0; i < 22; i++) {
@@ -156,7 +172,15 @@ for (let i = 0; i < 22; i++) {
   group.position.set(x, 0, z);
   const lobes = 2 + Math.floor(random() * 3);
   for (let j = 0; j < lobes; j++) {
-    const mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(.75 + random() * .55, 1), stoneMat.clone());
+    const sheet=new THREE.PlaneGeometry(1.8,2.8,10,16);
+    const vertices=sheet.attributes.position;
+    for(let k=0;k<vertices.count;k++){
+      const x=vertices.getX(k),y=vertices.getY(k);
+      vertices.setXYZ(k,x+Math.sin(y*1.4+j)*.55,y,Math.sin(x*2+y*.8)*.6);
+    }
+    sheet.computeVertexNormals();
+    const material=stoneMat.clone(); material.side=THREE.DoubleSide;
+    const mesh = new THREE.Mesh(sheet, material);
     mesh.scale.set(.65 + random() * .5, 1.5 + random() * 2.5, .65 + random() * .5);
     mesh.position.y = 1.1 + j * 1.18;
     mesh.rotation.set(random(), random() * Math.PI, random() * .25);
@@ -183,8 +207,8 @@ for (let i = 0; i < 52; i++) {
 
 const player = new THREE.Group();
 const core = new THREE.Mesh(
-  new THREE.IcosahedronGeometry(.62, 2),
-  new THREE.MeshStandardMaterial({ color: 0xc8ffff, emissive: 0x37eaff, emissiveIntensity: 3.4, roughness: .18 })
+  new THREE.OctahedronGeometry(.65, 1),
+  new THREE.MeshStandardMaterial({ color: 0xffebd1, emissive: 0x86613e, emissiveIntensity: .7, roughness: .65 })
 );
 const shell = new THREE.Mesh(
   new THREE.IcosahedronGeometry(.94, 1),
@@ -195,7 +219,8 @@ const halo = new THREE.Mesh(
   new THREE.MeshBasicMaterial({ color: 0xf3ffff, transparent: true, opacity: .7 })
 );
 halo.rotation.x = Math.PI / 2;
-player.add(core, shell, halo);
+player.add(core);
+core.scale.set(.55,1.25,.7);
 const playerLight = new THREE.PointLight(0x4deaff, 18, 13, 2);
 player.add(playerLight);
 scene.add(player);
@@ -306,11 +331,157 @@ pathGeometry.setAttribute('position', new THREE.BufferAttribute(pathPositions, 3
 pathGeometry.setDrawRange(0, 0);
 const pathLine = new THREE.Line(pathGeometry, new THREE.LineBasicMaterial({ color: 0x74f7ff, transparent: true, opacity: .48, blending: THREE.AdditiveBlending }));
 scene.add(pathLine);
+const ribbonPositions=new Float32Array(MAX_PATH*6);
+const ribbonGeometry=new THREE.BufferGeometry();
+ribbonGeometry.setAttribute('position',new THREE.BufferAttribute(ribbonPositions,3));
+const ribbonIndices=[];
+for(let i=0;i<MAX_PATH-1;i++){const j=i*2;ribbonIndices.push(j,j+1,j+2,j+1,j+3,j+2);}
+ribbonGeometry.setIndex(ribbonIndices);
+ribbonGeometry.setDrawRange(0,0);
+const ribbon=new THREE.Mesh(ribbonGeometry,new THREE.MeshBasicMaterial({
+  color:0x84bbb0,side:THREE.DoubleSide,transparent:true,opacity:.62
+}));
+ribbon.frustumCulled=false;
+scene.add(ribbon);
 const trail = [];
 let trailCount = 0;
 let lastTrailPoint = new THREE.Vector3(0, 0, 0);
 let anomalyCooldown = 0;
 const anomalies = [];
+const floorFolds = [];
+const bridges = [];
+let ridingBridge = null;
+
+function liftWake(index,angle,speed,age) {
+  const center=trail[index];
+  const existing=bridges.find(b=>Math.hypot(b.x-center.x,b.z-center.z)<4);
+  if(existing){
+    existing.visits++;
+    existing.target=existing.visits%2 ? 3.2 : 9+Math.min(4,existing.visits);
+    existing.twist+=.7;
+    growFold(center.x,center.z,5,1,existing.twist);
+    return;
+  }
+  if(bridges.length>=10) return;
+  const startIndex=Math.max(0,index-12);
+  const points=trail.slice(startIndex,Math.min(trail.length-20,index+13))
+    .map(p=>({x:p.x,z:p.z}));
+  if(points.length<10) return;
+  const geometry=new THREE.BufferGeometry();
+  const positions=new Float32Array(points.length*2*3);
+  const indices=[];
+  for(let i=0;i<points.length-1;i++){const j=i*2;indices.push(j,j+1,j+2,j+1,j+3,j+2);}
+  geometry.setAttribute('position',new THREE.BufferAttribute(positions,3));
+  geometry.setIndex(indices);
+  const material=new THREE.MeshStandardMaterial({color:0x78c4bb,emissive:0x193d3c,
+    emissiveIntensity:.6,metalness:.12,roughness:.45,side:THREE.DoubleSide});
+  const mesh=new THREE.Mesh(geometry,material);
+  mesh.frustumCulled=false;
+  scene.add(mesh);
+  bridges.push({x:center.x,z:center.z,points,mesh,positions,height:0,startIndex,
+    target:5+angle*4+Math.min(3,speed*.2),width:.65+Math.min(1.2,age/35),
+    twist:angle*1.4,visits:0,inside:true,time:0});
+  playStrike(100+speed*12+angle*90);
+}
+
+function bridgeSurface(b,x,z) {
+  let best=null;
+  for(let i=0;i<b.points.length-1;i++){
+    const a=b.points[i],c=b.points[i+1];
+    const dx=c.x-a.x,dz=c.z-a.z,l2=dx*dx+dz*dz;
+    const t=THREE.MathUtils.clamp(((x-a.x)*dx+(z-a.z)*dz)/Math.max(.0001,l2),0,1);
+    const d=Math.hypot(x-a.x-t*dx,z-a.z-t*dz);
+    if(d>b.width || (best && d>=best.distance))continue;
+    const progress=(i+t)/(b.points.length-1);
+    best={distance:d,progress,y:terrainHeight(x,z)+Math.sin(progress*Math.PI)*b.height+.2};
+  }
+  return best;
+}
+
+function evolveBridges(dt){
+  for(const b of bridges){
+    b.time+=dt;
+    const proximity=Math.hypot(playerPos.x-b.x,playerPos.z-b.z);
+    if(proximity>5) b.inside=false;
+    if(!b.inside && proximity<2.2 && b.time>4){
+      b.inside=true;b.visits++;b.twist+=.4;
+      b.target=b.visits%3===0?3.2:7+Math.min(5,b.visits);
+      playStrike(140+b.visits*19);
+    }
+    b.height+=(b.target+Math.sin(b.time*.65)*.3-b.height)*(1-Math.exp(-dt*.85));
+    for(let i=0;i<b.points.length;i++){
+      const p=b.points[i], a=b.points[Math.max(0,i-1)], c=b.points[Math.min(b.points.length-1,i+1)];
+      const length=Math.max(.001,Math.hypot(c.x-a.x,c.z-a.z));
+      const nx=-(c.z-a.z)/length,nz=(c.x-a.x)/length;
+      const t=i/(b.points.length-1);
+      // The two banks continually part and rejoin, while remaining a solid deck.
+      const width=b.width*(1+.3*Math.sin(t*12+b.twist+b.time*.4)*Math.sin(t*Math.PI));
+      for(let side=0;side<2;side++){
+        const sign=side?1:-1,x=p.x+nx*width*sign,z=p.z+nz*width*sign;
+        const at=(i*2+side)*3;
+        b.positions[at]=x;
+        b.positions[at+1]=terrainHeight(x,z)+Math.sin(t*Math.PI)*b.height+.2;
+        b.positions[at+2]=z;
+      }
+    }
+    b.mesh.geometry.attributes.position.needsUpdate=true;
+    b.mesh.geometry.computeVertexNormals();
+    b.mesh.material.roughness=.3+Math.sin(b.time*.3+b.visits)*.2;
+  }
+}
+
+function foldHeight(x,z) {
+  let height=0;
+  for(const f of floorFolds){
+    const qx=(x-f.x)/f.radius, qz=(z-f.z)/f.radius;
+    const d2=qx*qx+qz*qz;
+    if(d2>=1) continue;
+    const along=qx*Math.cos(f.angle)+qz*Math.sin(f.angle);
+    const across=-qx*Math.sin(f.angle)+qz*Math.cos(f.angle);
+    const form=f.kind===0 ? 1-2.3*d2 : Math.sin(along*3.4)*Math.exp(-across*across*7);
+    height+=f.height*(1-d2)*(1-d2)*form;
+  }
+  return height;
+}
+
+function growFold(x,z,radius,kind,angle=0) {
+  const existing=floorFolds.find(f=>Math.hypot(f.x-x,f.z-z)<Math.min(radius,f.radius)*.65);
+  if(existing){
+    existing.target=-Math.sign(existing.target||1)*Math.min(11,Math.abs(existing.target)+1.2);
+    existing.angle+=.55;
+    existing.revisits++;
+    return;
+  }
+  if(floorFolds.length>=12) return; // Preserve old ground, never silently delete it.
+  floorFolds.push({x,z,radius,kind,angle,height:0,target:kind===0?7:10,
+    revisits:0,inside:true,age:0,phase:0,turned:false});
+  playStrike(kind===0?150:230);
+}
+
+function evolveFloor(dt) {
+  floorFolds.forEach((f,i)=>{
+    f.age+=dt;
+    if(f.kind===0 && f.age>9 && !f.turned){
+      f.turned=true;
+      f.target=-Math.abs(f.target);
+    }
+    const distance=Math.hypot(playerPos.x-f.x,playerPos.z-f.z);
+    const inside=distance<f.radius*.68;
+    if(!f.inside && inside && f.age>4){
+      f.revisits++;
+      f.target=-Math.sign(f.target)*Math.min(12,Math.abs(f.target)+.7);
+      f.angle+=.32;
+      playStrike(130+f.revisits*23);
+    }
+    if(distance>f.radius*.94) f.inside=false;
+    else if(inside) f.inside=true;
+    f.phase+=dt*(.55+f.revisits*.07);
+    const breathing=Math.sin(f.phase)*Math.min(1.1,.25+f.revisits*.2);
+    f.height+=(f.target+breathing-f.height)*(1-Math.exp(-dt*.7));
+    terrainUniforms.folds.value[i].set(f.x,f.z,f.radius,f.height);
+    terrainUniforms.foldRules.value[i].set(f.kind,f.angle,0,0);
+  });
+}
 
 function gridIndex(x, z) {
   const gx = THREE.MathUtils.clamp(Math.floor((x / WORLD + .5) * GRID), 0, GRID - 1);
@@ -318,23 +489,26 @@ function gridIndex(x, z) {
   return gz * GRID + gx;
 }
 
-function sampleField(x, z, array = v) {
-  const fx = THREE.MathUtils.clamp((x / WORLD + .5) * (GRID - 1), 0, GRID - 1);
-  const fz = THREE.MathUtils.clamp((z / WORLD + .5) * (GRID - 1), 0, GRID - 1);
+function sampleField(x, z, array = v, channel = -1) {
+  const fx = THREE.MathUtils.clamp((x / WORLD + .5) * GRID - .5, 0, GRID - 1);
+  const fz = THREE.MathUtils.clamp((z / WORLD + .5) * GRID - .5, 0, GRID - 1);
   const x0 = Math.floor(fx), z0 = Math.floor(fz);
   const x1 = Math.min(GRID - 1, x0 + 1), z1 = Math.min(GRID - 1, z0 + 1);
   const tx = fx - x0, tz = fz - z0;
-  const top = THREE.MathUtils.lerp(array[z0 * GRID + x0], array[z0 * GRID + x1], tx);
-  const bottom = THREE.MathUtils.lerp(array[z1 * GRID + x0], array[z1 * GRID + x1], tx);
+  const get=(i)=>channel<0?array[i]:pixels[i*4+channel]/255;
+  const top = THREE.MathUtils.lerp(get(z0 * GRID + x0), get(z0 * GRID + x1), tx);
+  const bottom = THREE.MathUtils.lerp(get(z1 * GRID + x0), get(z1 * GRID + x1), tx);
   return THREE.MathUtils.lerp(top, bottom, tz);
 }
 
 function terrainHeight(x, z) {
   const base = Math.sin(x * .17) * .32 + Math.sin(z * .145 + 1.7) * .3;
-  const chemistry = sampleField(x, z, v);
-  const pulse = sampleField(x, z, wake);
-  const remembered = sampleField(x, z, memory);
-  return base + chemistry * 8.2 + pulse * 4.6 + Math.pow(remembered, 1.7) * 3.4;
+  const chemistry = sampleField(x,z,v,0);
+  const pulse = sampleField(x,z,v,1)*2-1;
+  const remembered = sampleField(x,z,v,2);
+  const living=Math.sin(terrainUniforms.time.value*1.65+x*.47-z*.31)*chemistry*1.45;
+  return base + Math.pow(chemistry,1.55)*5.2 + pulse*2.2 +
+    Math.pow(remembered,1.7)*2 + living*.45 + foldHeight(x,z);
 }
 
 function injectPoint(x, z, power, radius = 2) {
@@ -421,75 +595,36 @@ function addTrailPoint() {
       cx /= section.length; cz /= section.length;
       let extent = 0;
       for (const p of section) extent = Math.max(extent, Math.hypot(p.x - cx, p.z - cz));
-      const loopish = section.length > 65 && extent > 2.2;
-      spawnAnomaly(loopish ? cx : playerPos.x, loopish ? cz : playerPos.z, THREE.MathUtils.clamp(extent * .72, 2.2, 6.7), loopish ? 'membrane' : 'seam');
-      anomalyCooldown = 2.6;
+      let area=0;
+      for(let j=0;j<section.length;j++){
+        const a=section[j], b=section[(j+1)%section.length];
+        area+=a.x*b.z-b.x*a.z;
+      }
+      area=Math.abs(area)*.5;
+      const loopish=area>12 && area>extent*extent*.65;
+      const older=trail[Math.min(match+3,trail.length-1)];
+      const old=trail[Math.max(0,match-3)];
+      const ox=older.x-old.x, oz=older.z-old.z;
+      const cross=Math.abs(ox*playerVelocity.z-oz*playerVelocity.x) /
+        Math.max(.01,Math.hypot(ox,oz)*playerVelocity.length());
+      if(loopish){
+        growFold(cx,cz,THREE.MathUtils.clamp(Math.sqrt(area/Math.PI)*1.1,3,10),0);
+        anomalyCooldown=3;
+      }
+      if(cross>.55 && terrainUniforms.time.value-trail[match].t>3){
+        const age=terrainUniforms.time.value-trail[match].t;
+        liftWake(match,cross,playerVelocity.length(),age);
+        // Older, harder wakes buckle the floor too; fresh strands stay pliable.
+        if(age>12) growFold(playerPos.x,playerPos.z,6.5,1,Math.atan2(oz,ox));
+        anomalyCooldown=2;
+      }
     }
   }
   lastTrailPoint.copy(playerPos);
 }
 
-function spawnAnomaly(x, z, radius, kind = 'seam') {
-  if (anomalies.length >= 14) {
-    const old = anomalies.shift();
-    scene.remove(old.group);
-    old.group.traverse(o => { o.geometry?.dispose?.(); if (o.material && o.material !== stoneMat) o.material.dispose?.(); });
-  }
-  const group = new THREE.Group();
-  group.position.set(x, terrainHeight(x, z) + .2, z);
-  group.scale.setScalar(.01);
-  const color = kind === 'membrane' ? 0x74ffff : 0xff4fd8;
-
-  const membraneUniforms = { time: terrainUniforms.time, birth: { value: terrainUniforms.time.value }, color: { value: new THREE.Color(color) } };
-  const membrane = new THREE.Mesh(
-    new THREE.CircleGeometry(radius, 56, 0, Math.PI * 2),
-    new THREE.ShaderMaterial({
-      uniforms: membraneUniforms,
-      transparent: true,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-      vertexShader: `
-        uniform float time; uniform float birth; varying float edge; varying float ripple;
-        void main(){
-          vec3 p=position; float r=length(p.xy); edge=r/max(0.001,length(position.xy)+.001);
-          float age=max(0.,time-birth);
-          ripple=sin(r*2.4-time*2.1)+sin(atan(p.y,p.x)*3.+time*.7)*.45;
-          p.z += ripple*(.35+.25*sin(age)) + sin(r*.8-time)*.3;
-          gl_Position=projectionMatrix*modelViewMatrix*vec4(p,1.);
-        }`,
-      fragmentShader: `uniform vec3 color; varying float ripple; void main(){float a=.16+.13*(ripple*.5+.5); gl_FragColor=vec4(color*(1.1+abs(ripple)*.35),a);}`,
-    })
-  );
-  membrane.rotation.x = -Math.PI / 2;
-  group.add(membrane);
-
-  const ring = new THREE.Mesh(
-    new THREE.TorusGeometry(radius * .7, kind === 'membrane' ? .18 : .28, 10, 72),
-    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: .72, blending: THREE.AdditiveBlending })
-  );
-  ring.rotation.x = Math.PI / 2;
-  group.add(ring);
-
-  const arms = kind === 'membrane' ? 5 : 3;
-  for (let i = 0; i < arms; i++) {
-    const a = i / arms * Math.PI * 2 + random();
-    const points = [];
-    for (let j = 0; j < 5; j++) {
-      const f = j / 4;
-      points.push(new THREE.Vector3(Math.cos(a + f * 1.3) * radius * f, Math.sin(f * Math.PI) * radius * .55, Math.sin(a + f * 1.3) * radius * f));
-    }
-    const tube = new THREE.Mesh(
-      new THREE.TubeGeometry(new THREE.CatmullRomCurve3(points), 28, .055 + radius * .012, 5, false),
-      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: .66, blending: THREE.AdditiveBlending })
-    );
-    group.add(tube);
-  }
-  scene.add(group);
-  anomalies.push({ group, x, z, radius, kind, born: terrainUniforms.time.value, spin: (random() - .5) * .35 });
-  for (let a = 0; a < Math.PI * 2; a += .18) injectPoint(x + Math.cos(a) * radius, z + Math.sin(a) * radius, .9, 1.2);
-  injectPoint(x, z, 1.8, radius * .65);
-  playStrike(kind === 'membrane' ? 190 : 285);
+function spawnAnomaly(x,z,radius,kind='seam') {
+  growFold(x,z,Math.max(4,radius),kind==='membrane'?0:1);
 }
 
 function updateSentinels(time, dt) {
@@ -595,6 +730,24 @@ function updatePlayer(dt) {
   } else {
     playerVelocity.multiplyScalar(Math.exp(-dt * 5.2));
   }
+  // Sloped ground changes the route. Revisited folds acquire an uphill pull
+  // and a circulating current; steering remains stronger than either force.
+  const sx=(foldHeight(playerPos.x+.3,playerPos.z)-foldHeight(playerPos.x-.3,playerPos.z))/.6;
+  const sz=(foldHeight(playerPos.x,playerPos.z+.3)-foldHeight(playerPos.x,playerPos.z-.3))/.6;
+  let gravity=1;
+  for(const f of floorFolds){
+    const dx=playerPos.x-f.x,dz=playerPos.z-f.z;
+    const influence=Math.max(0,1-Math.hypot(dx,dz)/f.radius);
+    if(f.revisits%2) gravity-=1.8*influence;
+    if(f.revisits){
+      const spin=Math.min(3,f.revisits)*influence;
+      playerVelocity.x-=dz*spin*dt;
+      playerVelocity.z+=dx*spin*dt;
+    }
+  }
+  const slopeScale=4*gravity/Math.sqrt(1+sx*sx+sz*sz);
+  playerVelocity.x-=sx*slopeScale*dt;
+  playerVelocity.z-=sz*slopeScale*dt;
   playerPos.addScaledVector(playerVelocity, dt);
   const radial = Math.hypot(playerPos.x, playerPos.z);
   if (radial > 30.7) {
@@ -610,14 +763,35 @@ function updatePlayer(dt) {
     lastDeposit.copy(playerPos);
     if (playerPos.distanceTo(lastTrailPoint) > .48) addTrailPoint();
   }
-  const targetY = terrainHeight(playerPos.x, playerPos.z) + 1.15;
+  let supportY=terrainHeight(playerPos.x,playerPos.z);
+  if(ridingBridge){
+    const surface=bridgeSurface(ridingBridge,playerPos.x,playerPos.z);
+    if(surface) supportY=Math.max(supportY,surface.y);
+    else ridingBridge=null;
+  }
+  if(!ridingBridge){
+    for(const b of bridges){
+      const surface=bridgeSurface(b,playerPos.x,playerPos.z);
+      // Approach a strand's roots to climb; crossing its middle stays underneath.
+      if(surface && (surface.progress<.14 || surface.progress>.86) &&
+          surface.y<playerRenderY+.65){
+        ridingBridge=b; supportY=Math.max(supportY,surface.y); break;
+      }
+    }
+  }
+  const targetY = supportY + 1.15;
   playerVerticalVelocity += (targetY - playerRenderY) * 58 * dt;
   playerVerticalVelocity *= Math.exp(-dt * 13.5);
   playerRenderY += playerVerticalVelocity * dt;
+  playerRenderY=Math.max(targetY-.35,playerRenderY);
   player.position.set(playerPos.x, playerRenderY, playerPos.z);
   player.rotation.y = playerFacing;
-  core.rotation.x += dt * (1.2 + speed * .12);
-  core.rotation.z += dt * .75;
+  player.rotation.z+=(-Math.atan(sx)*.45-player.rotation.z)*(1-Math.exp(-dt*6));
+  player.rotation.x+=(Math.atan(sz)*.45-player.rotation.x)*(1-Math.exp(-dt*6));
+  core.rotation.x = -speed * .018;
+  core.rotation.z = Math.sin(terrainUniforms.time.value * 9.) * speed * .008;
+  core.scale.set(.5+Math.sin(terrainUniforms.time.value*1.3)*.1,
+    1.15+Math.sin(terrainUniforms.time.value*1.8)*.15,.65);
   shell.rotation.y -= dt * (1.3 + speed * .18);
   halo.rotation.z += dt * (1 + speed * .1);
   const bob = Math.sin(terrainUniforms.time.value * 4.5) * (.06 + speed * .009);
@@ -635,6 +809,7 @@ function updateCamera(dt, speed) {
   const desired = player.position.clone().add(new THREE.Vector3(-forward.x * horizontal, vertical, -forward.z * horizontal));
   desired.addScaledVector(playerVelocity, -.14);
   cameraPos.lerp(desired, 1 - Math.exp(-dt * 3.4));
+  cameraPos.y=Math.max(cameraPos.y,terrainHeight(cameraPos.x,cameraPos.z)+2);
   camera.position.copy(cameraPos);
   lookTarget.copy(player.position).addScaledVector(playerVelocity, .48).add(new THREE.Vector3(0, .4, 0));
   smoothedLookTarget.lerp(lookTarget, 1 - Math.exp(-dt * 6.2));
@@ -649,6 +824,8 @@ function animate() {
   const time = clock.elapsedTime;
   terrainUniforms.time.value = time;
   anomalyCooldown -= dt;
+  evolveFloor(dt);
+  evolveBridges(dt);
   const speed = updatePlayer(dt);
   simAccumulator += dt;
   const tick = 1 / 30;
@@ -657,7 +834,29 @@ function animate() {
     simAccumulator -= tick;
   }
   updateSentinels(time, dt);
-  updateAnomalies(time, dt);
+  // The visible wake is embedded in the current ground, including old segments.
+  for(let i=0;i<trailCount;i++){
+    const p=i*3;
+    pathPositions[p+1]=terrainHeight(pathPositions[p],pathPositions[p+2])+.12;
+    for(const b of bridges){
+      const t=(i-b.startIndex)/(b.points.length-1);
+      if(t>=0 && t<=1) pathPositions[p+1]+=Math.sin(t*Math.PI)*b.height+.2;
+    }
+    const prev=Math.max(0,i-1)*3,next=Math.min(trailCount-1,i+1)*3;
+    const dx=pathPositions[next]-pathPositions[prev],dz=pathPositions[next+2]-pathPositions[prev+2];
+    const length=Math.max(.001,Math.hypot(dx,dz));
+    const age=time-(trail[i]?.t??time);
+    const width=.16+Math.min(.36,age*.008);
+    for(let side=0;side<2;side++){
+      const sign=side?1:-1,at=i*6+side*3;
+      ribbonPositions[at]=pathPositions[p]-dz/length*width*sign;
+      ribbonPositions[at+1]=pathPositions[p+1];
+      ribbonPositions[at+2]=pathPositions[p+2]+dx/length*width*sign;
+    }
+  }
+  ribbonGeometry.setDrawRange(0,Math.max(0,trailCount-1)*6);
+  ribbonGeometry.attributes.position.needsUpdate=true;
+  pathGeometry.attributes.position.needsUpdate=true;
   updateCamera(dt, speed);
   renderer.render(scene, camera);
 }

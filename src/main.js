@@ -98,22 +98,27 @@ const terrain = new THREE.Mesh(
         float pulse = abs((vState.g - .5) * 2.);
         float memory = vState.b;
         float visits = vState.a;
-        vec3 abyss = vec3(.015, .028, .065);
-        vec3 cyan = vec3(.07, .93, 1.0);
-        vec3 orchid = vec3(.86, .12, .72);
-        vec3 amber = vec3(1.0, .48, .12);
-        float contour = .5 + .5 * sin(vHeight * 2.3 - time * .7 + memory * 13.);
-        float vein = smoothstep(.67, .98, sin(vPos.x * .7 + sin(vPos.z * .43 + time) * 2.4) * .5 + .5);
-        vec3 col = abyss;
-        col = mix(col, cyan * (1.15 + contour * .4), chemistry);
-        col = mix(col, orchid * (1.1 + pulse), visits * .82);
-        col += amber * pulse * .75;
-        col += cyan * vein * chemistry * .35;
-        col += vec3(.025, .045, .08) * contour;
         vec3 normal=normalize(cross(dFdx(vPos),dFdy(vPos)));
-        float light=.4+.6*abs(dot(normal,normalize(vec3(-.4,1.,.3))));
-        col=mix(vec3(.095,.12,.13),col,.65)*light;
+        if(normal.y<0.) normal=-normal;
+        vec3 eye=normalize(cameraPosition-vPos);
+        vec3 sun=normalize(vec3(-.6,1.,.45));
+        float light=.22+.78*max(0.,dot(normal,sun));
+        float rim=pow(1.-max(0.,dot(normal,eye)),3.);
+        float silk=pow(max(0.,dot(normal,normalize(sun+eye))),42.);
+        float stratum=.5+.5*sin(vHeight*1.7+memory*8.);
+        vec3 col=mix(vec3(.022,.052,.07),vec3(.07,.30,.32),smoothstep(.06,.65,chemistry));
+        col=mix(col,vec3(.19,.25,.35),visits*.35);
+        col*=light*(.82+.18*stratum);
+        col+=vec3(.32,.67,.67)*rim*(.08+chemistry*.32);
+        col+=vec3(.74,.85,.76)*silk*(.08+chemistry*.18);
+        float seam=pow(.5+.5*sin(memory*24.+vHeight*.8),18.);
+        col+=vec3(.17,.65,.59)*seam*memory*.12;
+        col+=vec3(.45,.24,.12)*pulse*.08;
+        float haze=1.-exp(-length(cameraPosition-vPos)*.021);
+        col=mix(col,vec3(.027,.052,.076),haze);
         gl_FragColor = vec4(col, 1.0);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
       }
     `,
     side: THREE.DoubleSide,
@@ -121,11 +126,14 @@ const terrain = new THREE.Mesh(
 );
 scene.add(terrain);
 
-const hemi = new THREE.HemisphereLight(0x7defff, 0x160525, 1.6);
+const hemi = new THREE.HemisphereLight(0xb6e5ef, 0x152334, 2.0);
 scene.add(hemi);
-const moon = new THREE.DirectionalLight(0xd4faff, 2.2);
+const moon = new THREE.DirectionalLight(0xffedd2, 3.0);
 moon.position.set(-12, 30, 8);
 scene.add(moon);
+const rimLight=new THREE.DirectionalLight(0x6bdfed,2.4);
+rimLight.position.set(14,9,-18);
+scene.add(rimLight);
 
 const sky = new THREE.Mesh(
   new THREE.SphereGeometry(100, 32, 18),
@@ -146,8 +154,8 @@ const sky = new THREE.Mesh(
   })
 );
 // An enclosed, misty material world, not a planetary horizon.
-scene.background.set(0x182227);
-scene.fog = new THREE.FogExp2(0x182227, .024);
+scene.background.set(0x2e404d);
+scene.fog = new THREE.FogExp2(0x2e404d, .025);
 
 function mulberry32(seed) {
   return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
@@ -158,10 +166,10 @@ const random = mulberry32(71289);
 // changes their future response instead of playing a fixed animation.
 const sentinels = [];
 const stoneMat = new THREE.MeshStandardMaterial({
-  color: 0x102439,
-  emissive: 0x052a38,
-  roughness: .38,
-  metalness: .25,
+  color: 0x507b88,
+  emissive: 0x08171e,
+  roughness: .29,
+  metalness: .18,
   flatShading: false,
 });
 
@@ -210,7 +218,8 @@ for (let i = 0; i < 52; i++) {
 const player = new THREE.Group();
 const core = new THREE.Mesh(
   new THREE.OctahedronGeometry(.65, 1),
-  new THREE.MeshStandardMaterial({ color: 0xffebd1, emissive: 0x86613e, emissiveIntensity: .7, roughness: .65 })
+  new THREE.MeshPhysicalMaterial({ color: 0xfff5dd, emissive: 0xc1d6cb, emissiveIntensity: .35,
+    roughness: .19, metalness: .12, clearcoat: 1, clearcoatRoughness:.2 })
 );
 const shell = new THREE.Mesh(
   new THREE.IcosahedronGeometry(.94, 1),
@@ -333,10 +342,15 @@ pathGeometry.setAttribute('position', new THREE.BufferAttribute(pathPositions, 3
 pathGeometry.setDrawRange(0, 0);
 const pathLine = new THREE.Line(pathGeometry, new THREE.LineBasicMaterial({ color: 0x74f7ff, transparent: true, opacity: .48, blending: THREE.AdditiveBlending }));
 scene.add(pathLine);
-const RIBBON_WIDTH = 9;
+const RIBBON_WIDTH = 13;
 const ribbonPositions=new Float32Array(MAX_PATH*RIBBON_WIDTH*3);
+const ribbonUV=new Float32Array(MAX_PATH*RIBBON_WIDTH*2);
+for(let i=0;i<MAX_PATH;i++)for(let k=0;k<RIBBON_WIDTH;k++){
+  const p=(i*RIBBON_WIDTH+k)*2; ribbonUV[p]=k/(RIBBON_WIDTH-1);ribbonUV[p+1]=i*.1;
+}
 const ribbonGeometry=new THREE.BufferGeometry();
 ribbonGeometry.setAttribute('position',new THREE.BufferAttribute(ribbonPositions,3));
+ribbonGeometry.setAttribute('uv',new THREE.BufferAttribute(ribbonUV,2));
 const ribbonIndices=[];
 for(let i=0;i<MAX_PATH-1;i++) for(let k=0;k<RIBBON_WIDTH-1;k++){
   const j=i*RIBBON_WIDTH+k;
@@ -346,14 +360,28 @@ ribbonGeometry.setIndex(ribbonIndices);
 ribbonGeometry.setDrawRange(0,0);
 const ribbon=new THREE.Mesh(ribbonGeometry,new THREE.ShaderMaterial({
   side:THREE.DoubleSide,
-  vertexShader:`varying vec3 point; void main(){ point=position;
+  vertexShader:`varying vec3 point; varying vec2 weave; void main(){ point=position; weave=uv;
     gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
-  fragmentShader:`varying vec3 point; void main(){
+  fragmentShader:`varying vec3 point; varying vec2 weave; void main(){
     vec3 n=normalize(cross(dFdx(point),dFdy(point)));
-    float light=.28+.72*abs(dot(n,normalize(vec3(-.6,1.,.4))));
-    float grain=.5+.5*sin(point.y*1.6+point.x*.22+point.z*.18);
-    vec3 color=mix(vec3(.12,.38,.39),vec3(.52,.88,.76),grain*.7);
-    gl_FragColor=vec4(color*light,1.);
+    vec3 eye=normalize(cameraPosition-point);
+    if(dot(n,eye)<0.) n=-n;
+    vec3 lamp=normalize(vec3(-.6,1.,.45));
+    float facing=max(0.,dot(n,eye));
+    float rim=pow(1.-facing,2.6);
+    float light=.25+.75*max(0.,dot(n,lamp));
+    float pearl=pow(max(0.,dot(n,normalize(lamp+eye))),32.);
+    float tide=.5+.5*sin(point.y*.75+weave.y*.3);
+    vec3 color=mix(vec3(.055,.27,.30),vec3(.47,.67,.59),tide*.65+rim*.25);
+    color=color*light+vec3(.8,.77,.63)*pearl*.6;
+    color+=vec3(.19,.48,.53)*rim*.38;
+    float edge=smoothstep(.94,1.,abs(weave.x*2.-1.));
+    color+=edge*vec3(.25,.76,.72)*.5;
+    float haze=1.-exp(-length(cameraPosition-point)*.021);
+    color=mix(color,vec3(.027,.052,.076),haze);
+    gl_FragColor=vec4(color,1.);
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
   }`
 }));
 ribbon.frustumCulled=false;
@@ -388,8 +416,9 @@ function liftWake(index,angle,speed,age) {
   for(let i=0;i<points.length-1;i++){const j=i*2;indices.push(j,j+1,j+2,j+1,j+3,j+2);}
   geometry.setAttribute('position',new THREE.BufferAttribute(positions,3));
   geometry.setIndex(indices);
-  const material=new THREE.MeshStandardMaterial({color:0x78c4bb,emissive:0x193d3c,
-    emissiveIntensity:.6,metalness:.12,roughness:.45,side:THREE.DoubleSide});
+  const material=new THREE.MeshPhysicalMaterial({color:0xa6cfc2,emissive:0x102c30,
+    emissiveIntensity:.3,metalness:.18,roughness:.3,clearcoat:.7,
+    clearcoatRoughness:.25,side:THREE.DoubleSide});
   const mesh=new THREE.Mesh(geometry,material);
   mesh.frustumCulled=false;
   scene.add(mesh);
@@ -654,8 +683,8 @@ function updateSentinels(time, dt) {
     s.group.position.y = terrainHeight(s.x, s.z);
     s.group.children.forEach((m, j) => {
       m.rotation.x += dt * (.05 + s.field * .25) * (j % 2 ? -1 : 1);
-      m.material.emissiveIntensity = .8 + s.field * 4 + s.activation;
-      m.material.emissive.setHSL(.52 + s.activation * .04, .75, .08 + s.field * .18);
+      m.material.emissiveIntensity = .35 + s.field * .65 + s.activation*.12;
+      m.material.emissive.setHSL(.51 + s.activation * .008, .42, .035 + s.field * .045);
     });
     if (dist < 6.4) {
       const angle = Math.atan2(playerPos.z - s.z, playerPos.x - s.x);

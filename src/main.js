@@ -33,6 +33,8 @@ let wakeVelocity = new Float32Array(CELLS);
 let memory = new Float32Array(CELLS);
 let visits = new Float32Array(CELLS);
 const pixels = new Uint8Array(CELLS * 4);
+const targetPixels = new Uint8Array(CELLS * 4);
+const flowingPixels = new Float32Array(CELLS * 4);
 const stateTexture = new THREE.DataTexture(pixels, GRID, GRID, THREE.RGBAFormat, THREE.UnsignedByteType);
 stateTexture.wrapS = stateTexture.wrapT = THREE.ClampToEdgeWrapping;
 stateTexture.magFilter = THREE.LinearFilter;
@@ -331,15 +333,28 @@ pathGeometry.setAttribute('position', new THREE.BufferAttribute(pathPositions, 3
 pathGeometry.setDrawRange(0, 0);
 const pathLine = new THREE.Line(pathGeometry, new THREE.LineBasicMaterial({ color: 0x74f7ff, transparent: true, opacity: .48, blending: THREE.AdditiveBlending }));
 scene.add(pathLine);
-const ribbonPositions=new Float32Array(MAX_PATH*6);
+const RIBBON_WIDTH = 9;
+const ribbonPositions=new Float32Array(MAX_PATH*RIBBON_WIDTH*3);
 const ribbonGeometry=new THREE.BufferGeometry();
 ribbonGeometry.setAttribute('position',new THREE.BufferAttribute(ribbonPositions,3));
 const ribbonIndices=[];
-for(let i=0;i<MAX_PATH-1;i++){const j=i*2;ribbonIndices.push(j,j+1,j+2,j+1,j+3,j+2);}
+for(let i=0;i<MAX_PATH-1;i++) for(let k=0;k<RIBBON_WIDTH-1;k++){
+  const j=i*RIBBON_WIDTH+k;
+  ribbonIndices.push(j,j+1,j+RIBBON_WIDTH,j+1,j+RIBBON_WIDTH+1,j+RIBBON_WIDTH);
+}
 ribbonGeometry.setIndex(ribbonIndices);
 ribbonGeometry.setDrawRange(0,0);
-const ribbon=new THREE.Mesh(ribbonGeometry,new THREE.MeshBasicMaterial({
-  color:0x84bbb0,side:THREE.DoubleSide,transparent:true,opacity:.62
+const ribbon=new THREE.Mesh(ribbonGeometry,new THREE.ShaderMaterial({
+  side:THREE.DoubleSide,
+  vertexShader:`varying vec3 point; void main(){ point=position;
+    gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
+  fragmentShader:`varying vec3 point; void main(){
+    vec3 n=normalize(cross(dFdx(point),dFdy(point)));
+    float light=.28+.72*abs(dot(n,normalize(vec3(-.6,1.,.4))));
+    float grain=.5+.5*sin(point.y*1.6+point.x*.22+point.z*.18);
+    vec3 color=mix(vec3(.12,.38,.39),vec3(.52,.88,.76),grain*.7);
+    gl_FragColor=vec4(color*light,1.);
+  }`
 }));
 ribbon.frustumCulled=false;
 scene.add(ribbon);
@@ -561,10 +576,10 @@ function simulate() {
   [u, u2] = [u2, u];
   [v, v2] = [v2, v];
   for (let i = 0, p = 0; i < CELLS; i++, p += 4) {
-    pixels[p] = Math.min(255, v[i] * 390);
-    pixels[p + 1] = Math.floor((wake[i] * .5 + .5) * 255);
-    pixels[p + 2] = Math.floor(memory[i] * 255);
-    pixels[p + 3] = Math.floor(visits[i] * 255);
+    targetPixels[p] = Math.min(255, v[i] * 390);
+    targetPixels[p + 1] = Math.floor((wake[i] * .5 + .5) * 255);
+    targetPixels[p + 2] = Math.floor(memory[i] * 255);
+    targetPixels[p + 3] = Math.floor(visits[i] * 255);
   }
   stateTexture.needsUpdate = true;
 }
@@ -720,15 +735,16 @@ function updatePlayer(dt) {
   const right = new THREE.Vector3(Math.cos(cameraYaw), 0, -Math.sin(cameraYaw));
   const desired = forward.multiplyScalar(-input.y).add(right.multiplyScalar(input.x));
   const hasInput = desired.lengthSq() > .015;
-  const surge = keys.has('ShiftLeft') || keys.has('ShiftRight') || joystick.length() > .94;
-  const maxSpeed = surge ? 12.8 : 8.2;
+  const surge = keys.has('ShiftLeft') || keys.has('ShiftRight');
+  const strength=input.length();
+  const maxSpeed = surge ? 12.8 : joystick.length()>.01 ? 12.2*strength : 8.8;
   if (hasInput) {
     desired.normalize().multiplyScalar(maxSpeed);
-    const response = 1 - Math.exp(-dt * (surge ? 4.6 : 6.7));
+    const response = 1 - Math.exp(-dt * 7.2);
     playerVelocity.lerp(desired, response);
     if (!movedYet) { movedYet = true; document.body.classList.add('moving'); }
   } else {
-    playerVelocity.multiplyScalar(Math.exp(-dt * 5.2));
+    playerVelocity.multiplyScalar(Math.exp(-dt * 4.4));
   }
   // Sloped ground changes the route. Revisited folds acquire an uphill pull
   // and a circulating current; steering remains stronger than either force.
@@ -779,17 +795,19 @@ function updatePlayer(dt) {
       }
     }
   }
-  const targetY = supportY + 1.15;
-  playerVerticalVelocity += (targetY - playerRenderY) * 58 * dt;
-  playerVerticalVelocity *= Math.exp(-dt * 13.5);
-  playerRenderY += playerVerticalVelocity * dt;
-  playerRenderY=Math.max(targetY-.35,playerRenderY);
+  const targetY = supportY + 1.35;
+  // Exact critically damped spring: consistent at 30/60/120 Hz, no floor snap.
+  const omega=12, offset=playerRenderY-targetY;
+  const impulse=playerVerticalVelocity+omega*offset, decay=Math.exp(-omega*dt);
+  playerRenderY=targetY+(offset+impulse*dt)*decay;
+  playerVerticalVelocity=(playerVerticalVelocity-omega*impulse*dt)*decay;
   player.position.set(playerPos.x, playerRenderY, playerPos.z);
-  player.rotation.y = playerFacing;
+  player.rotation.y += Math.atan2(Math.sin(playerFacing-player.rotation.y),
+    Math.cos(playerFacing-player.rotation.y))*(1-Math.exp(-dt*10));
   player.rotation.z+=(-Math.atan(sx)*.45-player.rotation.z)*(1-Math.exp(-dt*6));
   player.rotation.x+=(Math.atan(sz)*.45-player.rotation.x)*(1-Math.exp(-dt*6));
   core.rotation.x = -speed * .018;
-  core.rotation.z = Math.sin(terrainUniforms.time.value * 9.) * speed * .008;
+  core.rotation.z = Math.sin(terrainUniforms.time.value * 2.) * speed * .004;
   core.scale.set(.5+Math.sin(terrainUniforms.time.value*1.3)*.1,
     1.15+Math.sin(terrainUniforms.time.value*1.8)*.15,.65);
   shell.rotation.y -= dt * (1.3 + speed * .18);
@@ -807,32 +825,40 @@ function updateCamera(dt, speed) {
   const horizontal = Math.cos(cameraPitch) * cameraDistance;
   const vertical = Math.sin(cameraPitch) * cameraDistance;
   const desired = player.position.clone().add(new THREE.Vector3(-forward.x * horizontal, vertical, -forward.z * horizontal));
-  desired.addScaledVector(playerVelocity, -.14);
-  cameraPos.lerp(desired, 1 - Math.exp(-dt * 3.4));
-  cameraPos.y=Math.max(cameraPos.y,terrainHeight(cameraPos.x,cameraPos.z)+2);
+  desired.addScaledVector(playerVelocity, .16);
+  desired.y=Math.max(desired.y,terrainHeight(desired.x,desired.z)+3);
+  cameraPos.x+=(desired.x-cameraPos.x)*(1-Math.exp(-dt*4.5));
+  cameraPos.z+=(desired.z-cameraPos.z)*(1-Math.exp(-dt*4.5));
+  cameraPos.y+=(desired.y-cameraPos.y)*(1-Math.exp(-dt*2.2));
   camera.position.copy(cameraPos);
-  lookTarget.copy(player.position).addScaledVector(playerVelocity, .48).add(new THREE.Vector3(0, .4, 0));
-  smoothedLookTarget.lerp(lookTarget, 1 - Math.exp(-dt * 6.2));
+  lookTarget.copy(player.position).addScaledVector(playerVelocity, .32).add(new THREE.Vector3(0, .4, 0));
+  smoothedLookTarget.lerp(lookTarget, 1 - Math.exp(-dt * 3.8));
   camera.lookAt(smoothedLookTarget);
-  camera.fov += ((54 + speed * .65) - camera.fov) * Math.min(1, dt * 3);
+  camera.fov += ((54 + speed * .32) - camera.fov) * (1-Math.exp(-dt*2));
   camera.updateProjectionMatrix();
 }
 
 function animate() {
   requestAnimationFrame(animate);
-  const dt = Math.min(.033, clock.getDelta());
-  const time = clock.elapsedTime;
+  const dt = Math.min(.05, clock.getDelta());
+  const time = terrainUniforms.time.value + dt;
   terrainUniforms.time.value = time;
   anomalyCooldown -= dt;
-  evolveFloor(dt);
-  evolveBridges(dt);
-  const speed = updatePlayer(dt);
   simAccumulator += dt;
   const tick = 1 / 30;
   while (simAccumulator >= tick) {
     simulate();
     simAccumulator -= tick;
   }
+  const blend=1-Math.exp(-dt*7);
+  for(let i=0;i<pixels.length;i++){
+    flowingPixels[i]+=(targetPixels[i]-flowingPixels[i])*blend;
+    pixels[i]=Math.round(flowingPixels[i]);
+  }
+  stateTexture.needsUpdate=true;
+  evolveFloor(dt);
+  evolveBridges(dt);
+  const speed = updatePlayer(dt);
   updateSentinels(time, dt);
   // The visible wake is embedded in the current ground, including old segments.
   for(let i=0;i<trailCount;i++){
@@ -846,15 +872,25 @@ function animate() {
     const dx=pathPositions[next]-pathPositions[prev],dz=pathPositions[next+2]-pathPositions[prev+2];
     const length=Math.max(.001,Math.hypot(dx,dz));
     const age=time-(trail[i]?.t??time);
-    const width=.16+Math.min(.36,age*.008);
-    for(let side=0;side<2;side++){
-      const sign=side?1:-1,at=i*6+side*3;
-      ribbonPositions[at]=pathPositions[p]-dz/length*width*sign;
-      ribbonPositions[at+1]=pathPositions[p+1];
-      ribbonPositions[at+2]=pathPositions[p+2]+dx/length*width*sign;
+    const history=sampleField(pathPositions[p],pathPositions[p+2],visits);
+    const maturity=1-Math.exp(-Math.max(0,age)*.22);
+    const tip=Math.min(1,(trailCount-1-i)/8);
+    const unfurl=maturity*tip;
+    const phase=i*.085-time*.32+history*4;
+    const curl=unfurl*(1.1+history*1.8+.65*Math.sin(phase));
+    const radius=1.1+unfurl*(1.7+history*2.1);
+    for(let k=0;k<RIBBON_WIDTH;k++){
+      const s=k/(RIBBON_WIDTH-1)*2-1,at=(i*RIBBON_WIDTH+k)*3;
+      const theta=Math.abs(s)*curl;
+      // Flat wake rolls into two scrolls, then folds back over its own center.
+      const lateral=Math.sign(s)*radius*Math.sin(theta)/Math.max(.2,curl);
+      const spread=lateral+ s*.22;
+      ribbonPositions[at]=pathPositions[p]-dz/length*spread;
+      ribbonPositions[at+1]=pathPositions[p+1]+radius*(1-Math.cos(theta))*unfurl;
+      ribbonPositions[at+2]=pathPositions[p+2]+dx/length*spread;
     }
   }
-  ribbonGeometry.setDrawRange(0,Math.max(0,trailCount-1)*6);
+  ribbonGeometry.setDrawRange(0,Math.max(0,trailCount-1)*(RIBBON_WIDTH-1)*6);
   ribbonGeometry.attributes.position.needsUpdate=true;
   pathGeometry.attributes.position.needsUpdate=true;
   updateCamera(dt, speed);
@@ -864,6 +900,8 @@ function animate() {
 lastDeposit.copy(playerPos);
 injectPoint(0, 0, .55, 1.5);
 for (let i = 0; i < 18; i++) simulate();
+pixels.set(targetPixels);
+flowingPixels.set(targetPixels);
 updateCamera(1, 0);
 animate();
 
